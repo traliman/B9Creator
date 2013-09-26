@@ -262,19 +262,23 @@ void B9Print::on_pushButtonPauseResume_clicked()
     }
 }
 
+//callfrom button as well as from b9terminal for various reasons (given by sAbortText)
 void B9Print::on_pushButtonAbort_clicked(QString sAbortText)
 {
     //Prompt the User To Make Sure they want to abort.
-    QMessageBox msgBox;
-    msgBox.setText("Are you sure you want to abort?");
-    msgBox.setIcon(QMessageBox::Warning);
-    msgBox.setStandardButtons(QMessageBox::No | QMessageBox::Yes);
-    msgBox.setDefaultButton(QMessageBox::No);
-    int ret = msgBox.exec();
+    //only if the USER was the reason for abort...
+    if(sAbortText == "User Directed Abort.")
+    {
+        QMessageBox msgBox;
+        msgBox.setText("Are you sure you want to abort?");
+        msgBox.setIcon(QMessageBox::Warning);
+        msgBox.setStandardButtons(QMessageBox::No | QMessageBox::Yes);
+        msgBox.setDefaultButton(QMessageBox::No);
+        int ret = msgBox.exec();
 
-    if(ret == QMessageBox::No)
-        return;
-
+        if(ret == QMessageBox::No)
+            return;
+    }
 
 
 
@@ -449,7 +453,7 @@ void B9Print::exposureOfTOverLayersFinished(){
         ui->pushButtonAbort->setEnabled(false);
         ui->pushButtonPauseResume->setEnabled(false);
         m_iPrintState=PRINT_DONE;
-        m_pTerminal->rcFinishPrint(25.4); //Finish at current z position + 25.4 mm, turn Projector Off
+        m_pTerminal->rcFinishPrint(50.8); //Finish at current z position + 50.8 mm, turn Projector Off
         ui->lineEditLayerCount->setText("Finished!");
         setProjMessage("Finished!");
         return;
