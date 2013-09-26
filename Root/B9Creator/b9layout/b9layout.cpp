@@ -48,7 +48,6 @@
 #include <QVector3D>
 #include <QGLWidget>
 #include <QDebug>
-#include "slicedebugger.h"
 #include "SlcExporter.h"
 #include "modeldata.h"
 #include "b9modelinstance.h"
@@ -77,11 +76,12 @@ B9Layout::B9Layout(QWidget *parent, Qt::WFlags flags) : QMainWindow(parent, flag
     SetToolModelSelect();//start off with pointer tool
 
 	
-    pslicedebugger = new SliceDebugger(this,this,Qt::Window);
-
-
     //support editing
     currInstanceInSupportMode = NULL;
+    useContourAid = true;
+    useXRayVision = false;
+    xRayPercentage = 0.5;
+    hideSupports = true;
 
 	//slicing
 	cancelslicing = false;
@@ -104,7 +104,7 @@ B9Layout::~B9Layout()
 	}
 	delete project;
 	delete pWorldView;
-	delete pslicedebugger;
+
 }
 
 //returns a list of the currently selected instances
@@ -153,8 +153,8 @@ std::vector<B9ModelInstance*> B9Layout::GetAllInstances()
 //debug interface
 void B9Layout::OpenDebugWindow()
 {
-	pslicedebugger->show();
-	pslicedebugger->BakeTests();
+
+
 }
 
 //file
@@ -293,12 +293,14 @@ void B9Layout::SetXYPixelSizePreset(QString size)
 {
 	project->SetPixelSize(size.toDouble());
 	project->CalculateBuildArea();
+    UpdateExtentsUI();
 }
 
 void B9Layout::SetZLayerThickness(QString thick)
 {
 	project->SetPixelThickness(thick.toDouble());
 	project->CalculateBuildArea();
+    UpdateExtentsUI();
 }
 
 void B9Layout::SetProjectorX(QString x)
@@ -344,6 +346,7 @@ void B9Layout::SetProjectorPreset(int index)
             break;
 
     }
+    UpdateExtentsUI();
 
 }
 
@@ -391,6 +394,18 @@ void B9Layout::UpdateBuildSpaceUI()
 }
 
 
+void B9Layout::UpdateExtentsUI()
+{
+
+    ui.Print_Extents_X->setText(QString::number(ProjectData()->GetBuildSpace().x(),'g',4));
+    ui.Print_Extents_Y->setText(QString::number(ProjectData()->GetBuildSpace().y(),'g',4));
+    ui.Print_Extents_Z->setText(QString::number(ProjectData()->GetBuildSpace().z(),'g',4));
+
+}
+
+
+
+
 void B9Layout::BuildInterface()
 {
     unsigned int i, indx;
@@ -423,6 +438,10 @@ void B9Layout::BuildInterface()
     ui.viewToolBar->addAction(ui.actionTop_View);
     ui.viewToolBar->addAction(ui.actionFront_View);
     ui.viewToolBar->addAction(ui.actionRight_View);
+    ui.viewToolBar->addAction(ui.actionLeft_View);
+    ui.viewToolBar->addAction(ui.actionBottom_View);
+    ui.viewToolBar->addAction(ui.actionBack_View);
+
 
     //edit Support tab
     //fill the top, mid and lower combos with the valid names of attachement data.
@@ -467,6 +486,9 @@ void B9Layout::BuildInterface()
     QObject::connect(ui.actionTop_View,SIGNAL(activated()),pWorldView,SLOT(TopView()));
     QObject::connect(ui.actionRight_View,SIGNAL(activated()),pWorldView,SLOT(RightView()));
     QObject::connect(ui.actionFront_View,SIGNAL(activated()),pWorldView,SLOT(FrontView()));
+    QObject::connect(ui.actionBack_View,SIGNAL(activated()),pWorldView,SLOT(BackView()));
+    QObject::connect(ui.actionLeft_View,SIGNAL(activated()),pWorldView,SLOT(LeftView()));
+    QObject::connect(ui.actionBottom_View,SIGNAL(activated()),pWorldView,SLOT(BottomView()));
     QObject::connect(ui.TabWidget,SIGNAL(currentChanged(int)),this,SLOT(OnChangeTab(int)));
     QObject::connect(ui.actionSupportMode,SIGNAL(triggered(bool)),this,SLOT(SetSupportMode(bool)));
 
@@ -474,7 +496,19 @@ void B9Layout::BuildInterface()
     QObject::connect(ui.ModelList,SIGNAL(itemSelectionChanged()),this,SLOT(RefreshSelectionsFromList()));
     QObject::connect(ui.SupportList,SIGNAL(itemSelectionChanged()),this,SLOT(RefreshSupportSelectionsFromList()));
 
+    pXRaySlider = new QSlider(ui.viewToolBar);
+    pXRaySlider->setOrientation(Qt::Horizontal);
+    pXRaySlider->setMaximum(1000);
+    pXRaySlider->setMinimum(0);
+    pXRaySlider->setValue(500);
+    pXRaySlider->setEnabled(false);
+    ui.xRayToolBar->addAction(ui.actionX_Ray_Vision);
+    ui.xRayToolBar->addWidget(pXRaySlider);
+
+    QObject::connect(pXRaySlider,SIGNAL(valueChanged(int)),this,SLOT(OnXRayChange(int)));
+
 }
+
 
 
 void B9Layout::UpdateInterface()
@@ -519,9 +553,9 @@ void B9Layout::UpdateInterface()
         ui.TabWidget->blockSignals(false);
 
         B9ModelInstance* inst = FindInstance(ui.ModelList->selectedItems()[0]);
-        ui.posx->setText(QString().number(inst->GetPos().x()));
-		ui.posy->setText(QString().number(inst->GetPos().y()));
-		ui.posz->setText(QString().number(inst->GetPos().z()));
+        ui.posx->setText(QString().number(inst->GetPos().x(),'f',2));
+        ui.posy->setText(QString().number(inst->GetPos().y(),'f',2));
+        ui.posz->setText(QString().number(inst->GetMinBound().z(),'f',2));
 		
         ui.rotz->setText(QString().number(inst->GetRot().z()));
         ui.rotx->setText(QString().number(inst->GetRot().x()));
@@ -548,21 +582,38 @@ void B9Layout::UpdateInterface()
         ui.menuSupport_Tools->setEnabled(true);
         ui.menuModelModifiers->setEnabled(false);
         ui.menuModelTools->setEnabled(false);
+        ui.actionContour_Aid->setEnabled(true);
         ui.modelModifierToolBar->hide();
         ui.modelToolBar->hide();
         ui.supportToolBar->show();
-        ui.supportModifierToolBar->show();
+        ui.xRayToolBar->show();
+        ui.actionX_Ray_Vision->setEnabled(true);
+        ui.actionHide_Supports->setEnabled(true);
 
         if(pWorldView->GetTool() == "SUPPORTADD")
         {
             ui.supportInformationBox->show();
             ui.Support_Reset_To_Vertical_button->hide();
+            ui.Support_Set_To_Straight_button->hide();
+
+            ui.Support_Reset_Light_button->setCheckable(true);
+            ui.Support_Reset_Medium_button->setCheckable(true);
+            ui.Support_Reset_Heavy_button->setCheckable(true);
+
+            //start off with the right button checked
+            QSettings appSettings;
+            appSettings.beginGroup("USERSUPPORTPARAMS");
+            QString weight = appSettings.value("ADDPRESETWEIGHT","LIGHT").toString();
+            if(weight == "LIGHT") ui.Support_Reset_Light_button->setChecked(true);
+            if(weight == "MEDIUM") ui.Support_Reset_Medium_button->setChecked(true);
+            if(weight == "HEAVY") ui.Support_Reset_Heavy_button->setChecked(true);
         }
 
         if(pWorldView->GetTool() == "SUPPORTDELETE")
         {
             ui.supportInformationBox->hide();
              ui.Support_Reset_To_Vertical_button->hide();
+             ui.Support_Set_To_Straight_button->hide();
         }
 
         if(pWorldView->GetTool() == "SUPPORTMODIFY")
@@ -574,6 +625,13 @@ void B9Layout::UpdateInterface()
             {
                 ui.supportInformationBox->show();
                 ui.Support_Reset_To_Vertical_button->show();
+                ui.Support_Set_To_Straight_button->show();
+
+                ui.Support_Reset_Light_button->setCheckable(false);
+                ui.Support_Reset_Medium_button->setCheckable(false);
+                ui.Support_Reset_Heavy_button->setCheckable(false);
+
+
                 PushSupportProperties();
             }
 
@@ -586,6 +644,13 @@ void B9Layout::UpdateInterface()
         ui.menuModelTools->setEnabled(true);
         ui.modelToolBar->show();
         ui.supportToolBar->hide();
+        ui.actionContour_Aid->setEnabled(false);
+        ui.xRayToolBar->hide();
+        ui.actionX_Ray_Vision->setEnabled(false);
+        ui.actionHide_Supports->setEnabled(false);
+
+        UpdateExtentsUI();
+
     }
 }
 void B9Layout::PushTranslations()
@@ -769,6 +834,8 @@ void B9Layout::SetToolSupportAdd()
     UpdateInterface();
 
     FillSupportParamsWithDefaults();
+
+
 }
 
 void B9Layout::SetToolSupportDelete()
@@ -797,6 +864,64 @@ void B9Layout::ExitToolAction()
 {
     pWorldView->ExitToolAction();
 }
+
+
+
+//contour aid
+void B9Layout::OnToggleContourAid(bool tog)
+{
+    useContourAid = tog;
+}
+
+bool B9Layout::ContourAidEnabled()
+{
+    return useContourAid;
+}
+
+//xray vision
+void B9Layout::OnToggleXRay(bool tog)
+{
+
+    if(tog)
+    {
+        pXRaySlider->setEnabled(true);
+        useXRayVision = true;
+    }
+    else
+    {
+        pXRaySlider->setEnabled(false);
+        useXRayVision = false;
+    }
+}
+
+void B9Layout::OnXRayChange(int val)
+{
+    xRayPercentage = float(val)/1000.0;
+}
+
+bool B9Layout::XRayEnabled()
+{
+    return useXRayVision;
+}
+
+float B9Layout::XRayPercentage()
+{
+    return xRayPercentage;
+}
+
+//support hiding
+bool B9Layout::HidingSupports()
+{
+    return hideSupports;
+}
+
+void B9Layout::OnToggleSupportHiding(bool tog)
+{
+    hideSupports = tog;
+}
+
+
+
 
 
 //model
@@ -971,6 +1096,7 @@ void B9Layout::DeSelectAll()
 		}
 	}
 }
+
 void B9Layout::SetSelectionPos(double x, double y, double z, int axis)
 {
     int i;
@@ -978,21 +1104,13 @@ void B9Layout::SetSelectionPos(double x, double y, double z, int axis)
     {
         B9ModelInstance* inst = FindInstance(ui.ModelList->selectedItems()[i]);
         if(axis==0)
-        {
             inst->SetPos(QVector3D(x,y,z));
-        }
         else if(axis==1)
-        {
             inst->SetPos(QVector3D(x,inst->GetPos().y(),inst->GetPos().z()));
-        }
         else if(axis==2)
-        {
             inst->SetPos(QVector3D(inst->GetPos().x(),y,inst->GetPos().z()));
-        }
         else if(axis==3)
-        {
-            inst->SetPos(QVector3D(inst->GetPos().x(),inst->GetPos().y(),z));
-        }
+            inst->SetPos(QVector3D(inst->GetPos().x(),inst->GetPos().y(),z + inst->GetPos().z() - inst->GetMinBound().z()));
     }
 }
 void B9Layout::SetSelectionRot(QVector3D newRot)
@@ -1003,26 +1121,6 @@ void B9Layout::SetSelectionRot(QVector3D newRot)
         B9ModelInstance* inst = FindInstance(ui.ModelList->selectedItems()[i]);
 
         inst->SetRot(newRot);
-
-
-        /*
-        if(axis==0)
-        {
-            inst->SetRot(QVector3D(x,y,z));
-        }
-        else if(axis==1)
-        {
-            inst->SetRot(QVector3D(x,inst->GetRot().y(),inst->GetRot().z()));
-        }
-        else if(axis==2)
-        {
-            inst->SetRot(QVector3D(inst->GetRot().x(),y,inst->GetRot().z()));
-        }
-        else if(axis==3)
-        {
-            inst->SetRot(QVector3D(inst->GetRot().x(),inst->GetRot().y(),z));
-        }
-        */
     }
 }
 void B9Layout::SetSelectionScale(double x, double y, double z, int axis)
@@ -1032,21 +1130,13 @@ void B9Layout::SetSelectionScale(double x, double y, double z, int axis)
     {
         B9ModelInstance* inst = FindInstance(ui.ModelList->selectedItems()[i]);
         if(axis==0)
-        {
             inst->SetScale(QVector3D(x,y,z));
-        }
         else if(axis==1)
-        {
             inst->SetScale(QVector3D(x,inst->GetScale().y(),inst->GetScale().z()));
-        }
         else if(axis==2)
-        {
             inst->SetScale(QVector3D(inst->GetScale().x(),y,inst->GetScale().z()));
-        }
         else if(axis==3)
-        {
             inst->SetScale(QVector3D(inst->GetScale().x(),inst->GetScale().y(),z));
-        }
     }
 }
 void B9Layout::SetSelectionFlipped(bool flipped)
@@ -1208,11 +1298,22 @@ void B9Layout::SetSupportMode(bool tog)
 
 
         //we can assume weve selected something...
-
-
         currInstanceInSupportMode = GetSelectedInstances()[0];
+
+        //if the instance is on the ground, raise it so we dont get crunched supports.
+        if(currInstanceInSupportMode->GetMinBound().z() < 0.01 && !currInstanceInSupportMode->GetSupports().size())
+        {
+            oldModelConstricted = true;
+            currInstanceInSupportMode->Move(QVector3D(0,0,5));
+        }else oldModelConstricted = false;
+
         currInstanceInSupportMode->SetInSupportMode(true);
+        //bake the instance in a manner similar to slice preparation
+        //but without support baking!
         currInstanceInSupportMode->BakeGeometry();
+        currInstanceInSupportMode->SortBakedTriangles();
+        currInstanceInSupportMode->AllocateTriContainers(0.1);
+        currInstanceInSupportMode->FillTriContainers();
         currInstanceInSupportMode->FormTriPickDispLists();
 
         oldZoom = pWorldView->GetZoom();
@@ -1243,7 +1344,13 @@ void B9Layout::SetSupportMode(bool tog)
             currInstanceInSupportMode->SetInSupportMode(false);
             currInstanceInSupportMode->FreeTriPickDispLists();
             currInstanceInSupportMode->UnBakeGeometry();
-            currInstanceInSupportMode->SetPos(currInstanceInSupportMode->GetPos());//nudge to fix supports
+            currInstanceInSupportMode->FreeTriContainers();
+
+            if(oldModelConstricted && !currInstanceInSupportMode->GetSupports().size())
+                currInstanceInSupportMode->Move(QVector3D(0,0,-5));
+            else
+                currInstanceInSupportMode->SetPos(currInstanceInSupportMode->GetPos());//nudge to fix supports
+
             currInstanceInSupportMode = NULL;
         }
         pWorldView->SetRevolvePoint(QVector3D(0,0,0));
@@ -1343,7 +1450,10 @@ void B9Layout::RefreshSupportSelectionsFromList()
     if(pWorldView->GetTool() == "SUPPORTADD"
     || pWorldView->GetTool() == "SUPPORTDELETE")
     {
-        UpdateSupportList();
+        //UpdateSupportList();
+        //return;
+        SetToolSupportModify();
+        RefreshSupportSelectionsFromList();
         return;
     }
 
@@ -1490,9 +1600,48 @@ void B9Layout::MakeSelectedSupportsVertical()
         pSup->SetBottomPoint(QVector3D(pSup->GetTopPivot().x(),
                                        pSup->GetTopPivot().y(),
                                        pSup->GetBottomPoint().z()));
+    }
+}
+
+void B9Layout::MakeSelectedSupportsStraight()
+{
+    unsigned int i;
+    B9SupportStructure* pSup;
+    QVector3D lenVec;
+    QVector3D topNorm, bottomNorm;
+
+    if(SupportModeInst() == NULL)
+        return;
+
+
+    for(i = 0; i < currSelectedSupports.size(); i++)
+    {
+        pSup = currSelectedSupports[i];
+
+        lenVec = pSup->GetTopPoint() - pSup->GetBottomPoint();
+        lenVec.normalize();
+
+        topNorm = pSup->GetTopNormal();
+        bottomNorm = pSup->GetBottomNormal();
+
+        topNorm = lenVec;
+        topNorm.normalize();
+
+        bottomNorm = -lenVec;
+        bottomNorm.normalize();
+
+
+        pSup->SetTopNormal(topNorm);
+        if(!pSup->GetIsGrounded())
+            pSup->SetBottomNormal(bottomNorm);
+
+        pSup->SetTopAngleFactor(1.0);
+        if(!pSup->GetIsGrounded())
+            pSup->SetBottomAngleFactor(1.0);
 
     }
 
+    UpdateInterface();
 }
 
 //Support Properties changes
@@ -1790,12 +1939,12 @@ void B9Layout::OnBasePlatePropertiesChanged()
     basePlate = SupportModeInst()->GetBasePlate();
 
     //Creation/Destruction
-    if(ui.Support_Base_Enabled_checkBox->isChecked() && (basePlate == NULL))
+    if(ui.Support_Base_GroupBox->isChecked() && (basePlate == NULL))
     {
         SupportModeInst()->EnableBasePlate();
     }
 
-    if(!ui.Support_Base_Enabled_checkBox->isChecked() && (basePlate != NULL))
+    if(!ui.Support_Base_GroupBox->isChecked() && (basePlate != NULL))
     {
         SupportModeInst()->DisableBasePlate();
     }
@@ -1889,22 +2038,14 @@ void B9Layout::PushBasePlateProperties()
     int indx;
 
     if(basePlate == NULL)
-    {
-        ui.Support_Base_AttachType_comboBox->setEnabled(false);
-        ui.Support_Base_Coverage_horizontalSlider->setEnabled(false);
-        ui.Support_Base_Length_lineEdit->setEnabled(false);
-        ui.Support_Base_Enabled_checkBox->blockSignals(true);
-            ui.Support_Base_Enabled_checkBox->setChecked(false);
-        ui.Support_Base_Enabled_checkBox->blockSignals(false);
+    {  
+        ui.Support_Base_GroupBox->setChecked(false);
+        ui.Support_Base_Frame->hide();
     }
     else
     {
-        ui.Support_Base_AttachType_comboBox->setEnabled(true);
-        ui.Support_Base_Coverage_horizontalSlider->setEnabled(true);
-        ui.Support_Base_Length_lineEdit->setEnabled(true);
-        ui.Support_Base_Enabled_checkBox->blockSignals(true);
-            ui.Support_Base_Enabled_checkBox->setChecked(true);
-        ui.Support_Base_Enabled_checkBox->blockSignals(false);
+        ui.Support_Base_GroupBox->setChecked(true);
+        ui.Support_Base_Frame->show();
 
         indx = ui.Support_Base_AttachType_comboBox->findText(basePlate->GetBottomAttachShape());
         ui.Support_Base_Coverage_label->setText(QString::number(ui.Support_Base_Coverage_horizontalSlider->value()) + QString("%"));
@@ -1920,6 +2061,9 @@ void B9Layout::ResetSupportLight()//connected to push button will always use har
     if(pWorldView->GetTool() == "SUPPORTADD")
     {
         FillSupportParamsWithDefaults();
+
+        ui.Support_Reset_Heavy_button->setChecked(false);
+        ui.Support_Reset_Medium_button->setChecked(false);
     }
     else if(pWorldView->GetTool() == "SUPPORTMODIFY")
     {
@@ -1935,6 +2079,8 @@ void B9Layout::ResetSupportLight()//connected to push button will always use har
         //TODO THERE IS A DIFFERENCT BETWEEN GROUNDED AND NON GROUNDED WITH GROuPS
         OnSupport_Bottom_Length_Changed(false);
     }
+
+    UpdateInterface();
 }
 void B9Layout::ResetSupportMedium()//connected to push button will always use hardcoded values!
 {
@@ -1942,6 +2088,9 @@ void B9Layout::ResetSupportMedium()//connected to push button will always use ha
     if(pWorldView->GetTool() == "SUPPORTADD")
     {
         FillSupportParamsWithDefaults();
+
+        ui.Support_Reset_Heavy_button->setChecked(false);
+        ui.Support_Reset_Light_button->setChecked(false);
     }
     else if(pWorldView->GetTool() == "SUPPORTMODIFY")
     {
@@ -1957,6 +2106,7 @@ void B9Layout::ResetSupportMedium()//connected to push button will always use ha
         //TODO THERE IS A DIFFERENCT BETWEEN GROUNDED AND NON GROUNDED WITH GROuPS
         OnSupport_Bottom_Length_Changed(false);
     }
+    UpdateInterface();
 }
 void B9Layout::ResetSupportHeavy()//connected to push button will always use hardcoded values!
 {
@@ -1964,6 +2114,9 @@ void B9Layout::ResetSupportHeavy()//connected to push button will always use har
     if(pWorldView->GetTool() == "SUPPORTADD")
     {
         FillSupportParamsWithDefaults();
+
+        ui.Support_Reset_Light_button->setChecked(false);
+        ui.Support_Reset_Medium_button->setChecked(false);
     }
     else if(pWorldView->GetTool() == "SUPPORTMODIFY")
     {
@@ -1979,6 +2132,7 @@ void B9Layout::ResetSupportHeavy()//connected to push button will always use har
         //TODO THERE IS A DIFFERENCT BETWEEN GROUNDED AND NON GROUNDED WITH GROuPS
         OnSupport_Bottom_Length_Changed(false);
     }
+    UpdateInterface();
 }
 
 //fill the support parameter box will default params.
@@ -2045,7 +2199,7 @@ bool B9Layout::SliceWorld()
                                                 settings.value("WorkingDir").toString() + "/" + ProjectData()->GetJobName(),
                                                 tr("B9 Job (*.b9j);;SLC (*.slc)"));
 
-    if(filename.isEmpty())//cancel button
+    if(filename.isEmpty())//cancell button
 	{
         return false;
 	}
@@ -2080,11 +2234,6 @@ bool B9Layout::SliceWorld()
             return false;
         }
 	}
-    else
-    {
-        QMessageBox::information(0,"Cancelled", "Invalid File Extension: " +  Format);
-        return SliceWorld();
-    }
 
     return false;
 }
@@ -2092,29 +2241,21 @@ bool B9Layout::SliceWorld()
 //slicing to a job file!
 bool B9Layout::SliceWorldToJob(QString filename)
 {
-    unsigned int m;
-    unsigned int i;
-    unsigned int l;
-    unsigned int numlayers;
+    unsigned int m,i,l;
+    unsigned int totalSliceOps = 0;
+    unsigned int globalLayers;
     int nummodels = 0;
     B9ModelInstance* pInst;
 	double zhieght = project->GetBuildSpace().z();
 	double thickness = project->GetPixelThickness()*0.001;
-	int xsize = project->GetResolution().x();
-	int ysize = project->GetResolution().y();
     QString jobname = project->GetJobName();
     QString jobdesc = project->GetJobDescription();
-	int x;
-	int y;
-	QRgb pickedcolor;
-	QPixmap pix;
-    QImage img(xsize,ysize, QImage::Format_ARGB32_Premultiplied);
-    QImage imgfrommaster(xsize,ysize, QImage::Format_ARGB32_Premultiplied);
 	CrushedPrintJob* pMasterJob = NULL;
-    QPainter painter;
+    Slice* pSlice;
+    bool moreSlicesToCome;
 
 	//calculate how many layers we need
-	numlayers = qCeil(zhieght/thickness);
+    globalLayers = qCeil(zhieght/thickness);
 
 	//calculate how many models there are
 	for(m=0;m<ModelDataList.size();m++)
@@ -2122,19 +2263,17 @@ bool B9Layout::SliceWorldToJob(QString filename)
 		for(i=0;i<ModelDataList[m]->instList.size();i++)
 		{
             pInst = ModelDataList[m]->instList[i];
-			nummodels++;
+            totalSliceOps += qCeil((pInst->GetMaxBound().z() - pInst->GetMinBound().z())/thickness);
 		}
     }
-	//make a loading bar
-    LoadingBar progressbar(0, numlayers);
-	QObject::connect(&progressbar,SIGNAL(rejected()),this,SLOT(CancelSlicing()));
-    progressbar.setDescription("Processing Layout...");
-	progressbar.setValue(0);
-	QApplication::processEvents();
 
+    //make a loading bar
+    LoadingBar progressbar(0, totalSliceOps);
+    QObject::connect(&progressbar,SIGNAL(rejected()),this,SLOT(CancelSlicing()));
+    progressbar.setDescription("Slicing to Job..");
+    progressbar.setValue(0);
+    QApplication::processEvents();
 
-	SliceContext paintwidget(NULL, this);
-	paintwidget.makeCurrent();
 
 	//make a master job file for use later
 	pMasterJob = new CrushedPrintJob();
@@ -2142,13 +2281,9 @@ bool B9Layout::SliceWorldToJob(QString filename)
     pMasterJob->setDescription(jobdesc);
 	pMasterJob->setXYPixel(QString().number(project->GetPixelSize()/1000));
 	pMasterJob->setZLayer(QString().number(project->GetPixelThickness()/1000));
-	
+    pMasterJob->clearAll(globalLayers);//fills the master job with the needed layers
 
-    pMasterJob->clearAll(numlayers);//fills the master job with the needed layers
 
-    progressbar.setDescription("Slicing Layout..");
-    progressbar.setMax(numlayers*nummodels);
-	progressbar.setValue(0);
     //FOR Each Model Instance
 	for(m=0;m<ModelDataList.size();m++)
     {
@@ -2158,71 +2293,40 @@ bool B9Layout::SliceWorldToJob(QString filename)
             inst->PrepareForSlicing(thickness);
 
 			//slice all layers and add to instance's job file
-			for(l = 0; l < numlayers; l++)
+            for(l = 0; l < globalLayers; l++)
             {
-
                 //if we are in the model's z - bounds
                 if((double)l*thickness <= inst->GetMaxBound().z() && (double)l*thickness >= inst->GetMinBound().z()-0.5*thickness)
                 {
-					//ACTUALLY Generate the Slice.
-					inst->pSliceSet->GenerateSlice(l*thickness + thickness*0.5);
-					paintwidget.SetSlice(inst->pSliceSet->pSliceData);
-					
-
-					pix = paintwidget.renderPixmap(xsize,ysize);
-					img = pix.toImage();
-					
-
-					for(x = 0; x < xsize; x++)
-					{
-						for(y = 0; y < ysize; y++)
-						{
-							pickedcolor = img.pixel(x,y);
-							if(qRed(pickedcolor) || qGreen(pickedcolor))
-							{
-								int result = qRed(pickedcolor) - qGreen(pickedcolor);
-								if(result > 0)
-								{
-									result = 255;
-                                }else result = 0;
-                                img.setPixel(x,y,QColor(result,0,0,result).rgba());
-							}
-						}
-					}
-					QApplication::processEvents();
-                    imgfrommaster.fill(Qt::black);
-                    pMasterJob->setCurrentSlice(l);
-
-                    pMasterJob->inflateCurrentSlice(&imgfrommaster);
-                    if(imgfrommaster.size() == QSize(0,0))
-                    {
-                        imgfrommaster = QImage(xsize,ysize,QImage::Format_ARGB32_Premultiplied);
-                        imgfrommaster.fill(Qt::black);
-                    }
-                    //combine img with masterimage;
-                    painter.begin(&imgfrommaster);
-                    painter.setCompositionMode(QPainter::CompositionMode_Plus);
-                    painter.setRenderHint(QPainter::Antialiasing,false);
-                    painter.drawImage(0,0,img);
-                    painter.end();
-
-                    pMasterJob->crushCurrentSlice(&imgfrommaster);
-
+                    inst->pSliceSet->QueNewSlice(l*thickness + thickness*0.5,l);
                 }
-                //update progress bar
-                progressbar.setValue(progressbar.GetValue() + 1);
-                QApplication::processEvents();//except user input
+            }
+            if(nummodels == 1)
+                inst->pSliceSet->SetSingleModelCompressHint(true);
+            else
+                inst->pSliceSet->SetSingleModelCompressHint(false);
+
+            do
+            {
+                pSlice = inst->pSliceSet->ParallelCreateSlices(moreSlicesToCome,pMasterJob);
+                if(pSlice != NULL)
+                {
+                    delete pSlice;
+                    progressbar.setValue(progressbar.GetValue() + 1);
+                    QApplication::processEvents();
+                }
+
                 if(cancelslicing)
                 {
                     cancelslicing = false;
-                    delete pMasterJob;
-                    pMasterJob = NULL;
-                    pWorldView->makeCurrent();
                     inst->FreeFromSlicing();
                     return false;
                 }
 
-			}
+            }while(moreSlicesToCome);
+
+
+
             inst->FreeFromSlicing();
 		}
 	}
@@ -2253,6 +2357,9 @@ bool B9Layout::SliceWorldToSlc(QString filename)
 	double zhieght = project->GetBuildSpace().z();
 	double thickness = project->GetPixelThickness()*0.001;
 
+    Slice* currSlice = NULL;
+    bool moreSlicesToCome;
+
 	//calculate how many layers we need
 	numlayers = qCeil(zhieght/thickness);
 	//calculate how many models there are
@@ -2263,27 +2370,28 @@ bool B9Layout::SliceWorldToSlc(QString filename)
 			nummodels++;
 		}
 	}
-	
-	//make a loading bar
-    LoadingBar progressbar(0, numlayers*nummodels);
-	QObject::connect(&progressbar,SIGNAL(rejected()),this,SLOT(CancelSlicing()));
-	progressbar.setDescription("Exporting SLC..");
-	progressbar.setValue(0);
-	QApplication::processEvents();
 
-	//create an slc exporter
-	SlcExporter slc(filename.toStdString());
-	if(!slc.SuccessOpen())
-	{
-		 QMessageBox msgBox;
-		 msgBox.setText("Unable To Open Slc File!");
-		 msgBox.exec();
-	}
-	//write the header
-	slc.WriteHeader("heeeeelllllloooooo");
-	slc.WriteReservedSpace();
-	slc.WriteSampleTableSize(1);
-	slc.WriteSampleTable(0.0,float(thickness),0.0f);
+    //make a loading bar
+        LoadingBar progressbar(0, numlayers*nummodels);
+        QObject::connect(&progressbar,SIGNAL(rejected()),this,SLOT(CancelSlicing()));
+        progressbar.setDescription("Exporting SLC..");
+        progressbar.setValue(0);
+        QApplication::processEvents();
+
+	
+    //create an slc exporter
+    SlcExporter slc(filename.toStdString());
+    if(!slc.SuccessOpen())
+    {
+        QMessageBox msgBox;
+        msgBox.setText("Unable To Open Slc File!");
+        msgBox.exec();
+    }
+    //write the header
+    slc.WriteHeader("heeeeelllllloooooo");
+    slc.WriteReservedSpace();
+    slc.WriteSampleTableSize(1);
+    slc.WriteSampleTable(0.0,float(thickness),0.0f);
 
 
 
@@ -2295,35 +2403,45 @@ bool B9Layout::SliceWorldToSlc(QString filename)
             B9ModelInstance* inst = ModelDataList[m]->instList[i];
             inst->PrepareForSlicing(thickness);
 
-			//slice all layers and add to instance's job file
+            //slice all layers and add to instance's job file
 			for(l = 0; l < numlayers; l++)
 			{
 				//make sure we are in the model's z - bounds
 				if(l*thickness <= inst->GetMaxBound().z() && l*thickness >= inst->GetMinBound().z())
 				{
-					
-					//ACTUALLY Generate the Slice.
-					inst->pSliceSet->GenerateSlice(l*thickness + thickness*0.5);
-					slc.WriteNewSlice(l*thickness + thickness*0.5,inst->pSliceSet->pSliceData->loopList.size());
-					inst->pSliceSet->pSliceData->WriteToSlc(&slc);
-				}
+                    inst->pSliceSet->QueNewSlice(l*thickness + thickness*0.5,l);
+                }
+            }
 
-				progressbar.setValue(progressbar.GetValue() + 1);
-				QApplication::processEvents();
-				if(cancelslicing)
-				{
-						cancelslicing = false;
-                        inst->FreeFromSlicing();
-                        return false;
-				}
+            do
+            {
+                currSlice = inst->pSliceSet->ParallelCreateSlices(moreSlicesToCome,0);
+                if(currSlice != NULL)
+                {
+                    progressbar.setValue(progressbar.GetValue() + 1);
+                    QApplication::processEvents();
+                    slc.WriteNewSlice(currSlice->realAltitude, currSlice->loopList.size());
+                    currSlice->WriteToSlc(&slc);
+                    delete currSlice;
+                }
 
-			}
+
+                if(cancelslicing)
+                {
+                    cancelslicing = false;
+                    inst->FreeFromSlicing();
+                    return false;
+                }
+
+            }while(moreSlicesToCome);
+
+
+
             inst->FreeFromSlicing();
 		}
 	}
 
-	slc.WriteNewSlice(0.0,0xFFFFFFFF);
-	//slc falls out of scope (automatically closes the file.)
+    slc.WriteNewSlice(0.0,0xFFFFFFFF);
     return true;
 }
 
